@@ -82,29 +82,34 @@ def get_markets(end_min="2024-01-01", end_max="2026-06-30", max_pages=5, page=10
 # 2. Trades for one market (Data API, no key) — fine for testing / small samples
 # ---------------------------------------------------------------------------
 def get_trades(condition_id, page=500, max_pages=20):
-    rows = []
-    for i in range(max_pages):
-        r = requests.get(
-            f"{DATA}/trades",
-            params={"market": condition_id, "limit": page, "offset": i * page,
-                    "takerOnly": "false"},
-            timeout=30,
-        )
+    """Data API v2: cursor pagination, snake_case fields."""
+    rows, cursor = [], None
+    for _ in range(max_pages):
+        params = {"condition": condition_id, "limit": page}
+        if cursor:
+            params["cursor"] = cursor
+        r = requests.get(f"{DATA}/v2/trades", params=params, timeout=30)
         if r.status_code != 200:
+            print(f"   trades request failed: {r.status_code} {r.text[:200]}")
             break
-        batch = r.json()
-        if not batch:
+        body = r.json()
+        rows.extend(body.get("data", []))
+        pg = body.get("pagination", {})
+        cursor = pg.get("next_cursor")
+        if not pg.get("has_more") or not cursor:
             break
-        rows.extend(batch)
         time.sleep(0.2)
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    df = df.rename(columns={"proxy_wallet": "proxyWallet",
+                            "condition_id": "conditionId",
+                            "transaction_hash": "transactionHash"})
     df["time"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
     return df[["time", "proxyWallet", "side", "outcome", "price", "size",
                "conditionId", "transactionHash"]]
- 
- 
+
+
 # ---------------------------------------------------------------------------
 # 3. Daily wallet x position panel + one-sided (retail) filter
 # ---------------------------------------------------------------------------
@@ -169,6 +174,8 @@ if __name__ == "__main__":
     sample = mkts[mkts["fixed_date"]].iloc[0]
     print(f"2) Trades for: {sample['question']}")
     trades = get_trades(sample["conditionId"])
+    if trades.empty:
+        raise SystemExit("No trades returned - check API errors above.")
     trades.to_csv(f"{OUT}/trades_sample.csv", index=False)
     print(trades.head(), f"\n   {len(trades)} trades\n")
  
